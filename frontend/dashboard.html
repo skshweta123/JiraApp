@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <h1 class="text-4xl font-bold text-gray-800 mb-4">Dashboard</h1>
+        <p class="text-gray-600 mb-8">A list of issues from your Jira project.</p>
+
+        <div id="user-message" class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4" role="alert">
+            <p class="font-bold">Instructions</p>
+            <p>You can now enter UAT and Release details for each ticket in the table below. The data will be saved automatically.</p>
+        </div>
+
+        <div id="error-message" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+            <span class="block sm:inline"></span>
+        </div>
+
+        <div class="bg-white shadow-md rounded my-6">
+            <table id="tickets-table" class="min-w-full table-auto">
+                <thead class="bg-gray-200">
+                    <!-- Headers will be inserted here by JavaScript -->
+                </thead>
+                <tbody id="tickets-tbody" class="bg-white">
+                    <!-- Ticket rows will be inserted here by JavaScript -->
+                </tbody>
+            </table>
+            <div id="loading" class="text-center p-4">Loading tickets...</div>
+        </div>
+    </div>
+    <script src="dashboard.js"></script>
+</body>
+</html> 
