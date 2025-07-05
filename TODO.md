@@ -53,24 +53,14 @@ Typing a valid Issue Key and pressing Enter highlights the ticket in the list or
 If the issue does not exist, a clear “Not Found” message is shown.
 
 Story 5: As a user, I want to update one or more fields in a ticket so that I can reflect the latest status or completion dates.
-Status: In Progress
+Status: Completed
 Acceptance Criteria:
 
 - Editable input fields for UAT and Release data are displayed on the dashboard for each ticket.
-- Clicking on a ticket opens an edit form/modal.
-All fields except Item# are editable.
-
-User can update one or multiple fields at once.
-
-On submission:
-
-Request is sent to backend.
-
-Backend patches the fields using Jira API.
-
-Dashboard updates reflect immediately.
-
-Success or error feedback is shown via toast.
+- A "Save" button is present on each ticket row to persist changes.
+- On submission, a request is sent to a backend endpoint that patches the fields using the Jira API.
+- The dashboard is updated to reflect the changes immediately after a successful save.
+- Success or error feedback is shown to the user.
 
 Story 6: As a user, I want to create a new ticket in Jira so that I can add new backlog items.
 Status: Not Started

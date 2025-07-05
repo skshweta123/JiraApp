@@ -1,228 +1,315 @@
-document.addEventListener('DOMContentLoaded', async () => {
-    const errorMessage = document.getElementById('error-message');
-    const loading = document.getElementById('loading');
-    const tableHead = document.querySelector('#tickets-table thead');
-    const ticketsBody = document.getElementById('tickets-tbody');
+const API_URL = 'http://localhost:5001';
 
-    const showError = (message) => {
-        errorMessage.textContent = message;
-        errorMessage.classList.remove('hidden');
-        loading.style.display = 'none';
-    };
+// This configuration defines the structure and behavior of the dashboard table.
+// It is the single source of truth for what columns are displayed and how they function.
+const columnDefinition = [
+    // Standard Jira fields that are displayed but not editable by the user.
+    { name: 'Item#', jiraName: 'key', isJira: true, isEditable: false, isVisible: true },
+    { name: 'Title', jiraName: 'summary', isJira: true, isEditable: false, isVisible: true },
+    { name: 'Status', jiraName: 'status', isJira: true, isEditable: false, isVisible: true },
+    // "Due Date" from Jira is repurposed as the "UAT Handover Date" on the frontend.
+    { name: 'UAT Handover Date', jiraName: 'duedate', isJira: true, isEditable: false, isVisible: true },
 
+    // User-editable fields that correspond to Jira custom fields.
+    { name: 'UAT Planned Start Date', jiraName: 'UAT Planned Start Date', isJira: true, isEditable: true, isVisible: true, type: 'date' },
+    { name: 'UAT Planned Completion', jiraName: 'UAT Planned Completion', isJira: true, isEditable: true, isVisible: true, type: 'date' },
+    { 
+        name: 'UAT Status', 
+        jiraName: 'UAT Status', 
+        isJira: true, 
+        isEditable: true, 
+        isVisible: true, 
+        type: 'dropdown',
+        dropdownOptions: ['Not Started', 'In Progress', 'Signed-off', 'Delayed'] 
+    },
+    { name: 'Planned Release Date', jiraName: 'Planned Release Date', isJira: true, isEditable: true, isVisible: true, type: 'date' },
+    { 
+        name: 'Release Status', 
+        jiraName: 'Release Status', 
+        isJira: true, 
+        isEditable: true, 
+        isVisible: true, 
+        type: 'dropdown',
+        dropdownOptions: ['Not Started', 'In Progress', 'Released', 'Delayed']
+    },
+
+    // Jira fields that are fetched for logic but not displayed to the user.
+    { name: 'Created', jiraName: 'created', isJira: true, isEditable: false, isVisible: false },
+    { name: 'Labels', jiraName: 'labels', isJira: true, isEditable: false, isVisible: false },
+    { name: 'Reporter', jiraName: 'reporter', isJira: true, isEditable: false, isVisible: false },
+];
+
+// This will be populated with the final column configuration, including Jira field IDs.
+let tableColumns = [];
+// This map stores the mapping of user-facing column names to Jira's internal field IDs.
+let jiraFieldIdMap = {};
+
+
+/**
+ * Retrieves ticket data from local storage.
+ * @param {string} issueKey - The key of the issue to retrieve.
+ * @returns {object} The stored data for the ticket.
+ */
+const getStoredTicketData = (issueKey) => JSON.parse(localStorage.getItem(issueKey) || '{}');
+
+/**
+ * Saves ticket data to local storage.
+ * @param {string} issueKey - The key of the issue to save.
+ * @param {object} data - The data to save for the ticket.
+ */
+const saveStoredTicketData = (issueKey, data) => localStorage.setItem(issueKey, JSON.stringify(data));
+
+
+/**
+ * Fetches the required Jira field definitions from the backend and configures the table columns.
+ */
+const fetchAndSetColumns = async () => {
     try {
-        const response = await fetch('http://localhost:5001/api/tickets', {
-            method: 'GET',
-            credentials: 'include'
+        const response = await fetch(`${API_URL}/api/jira-fields`, { credentials: 'include' });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const jiraFields = await response.json();
+        
+        // Create a map of Jira field names and IDs for quick lookup.
+        const jiraFieldMap = new Map();
+        jiraFields.forEach(field => {
+            jiraFieldMap.set(field.name.toLowerCase(), field);
+            jiraFieldMap.set(field.id, field);
         });
 
-        if (response.ok) {
-            const { tickets } = await response.json();
-
-            // Define the complete, ordered structure for the table columns.
-            const tableColumns = [
-                { name: 'Item#', type: 'jira', source: 'Item#' },
-                { name: 'Title', type: 'jira', source: 'Title' },
-                { name: 'Status', type: 'jira', source: 'Status' },
-                { name: 'UAT Handover Date', type: 'jira', source: 'Due Date' },
-                { name: 'UAT Planned Start Date', type: 'date' },
-                { name: 'UAT Planned Completion Date', type: 'date' },
-                { name: 'UAT Status', type: 'select', options: ['Not Started', 'In Progress', 'Signed-Off', 'Delayed'] },
-                { name: 'Release Planned Date', type: 'date' },
-                { name: 'Release Status', type: 'select', options: ['Not Started', 'In Progress', 'Released', 'Delayed'] }
-            ];
-
-            // Clear existing content
-            tableHead.innerHTML = '';
-            ticketsBody.innerHTML = '';
-
-            // Create table headers from the new structure
-            const headerRow = document.createElement('tr');
-            tableColumns.forEach(column => {
-                const th = document.createElement('th');
-                const isJiraColumn = column.type === 'jira';
-                th.className = `px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${isJiraColumn ? 'bg-gray-100' : 'bg-blue-300'}`;
-                th.textContent = column.name;
-                headerRow.appendChild(th);
-            });
-            tableHead.appendChild(headerRow);
-
-            // This function contains all the validation and dynamic status logic for a single row.
-            const updateRowLogic = (row) => {
-                const rowData = {};
-                tableColumns.forEach((col, index) => {
-                    const cell = row.cells[index];
-                    if (col.type === 'jira') {
-                        // For handover date, parse it, otherwise just get text content
-                        if(col.name === 'UAT Handover Date' && cell.textContent) {
-                            rowData[col.name] = new Date(cell.textContent);
-                        }
-                    } else {
-                        rowData[col.name] = cell.querySelector('input, select');
-                    }
-                });
-
-                const handoverDate = rowData['UAT Handover Date'];
-                const startDateInput = rowData['UAT Planned Start Date'];
-                const completionDateInput = rowData['UAT Planned Completion Date'];
-                const releaseDateInput = rowData['Release Planned Date'];
-                const uatStatusSelect = rowData['UAT Status'];
-                const releaseStatusSelect = rowData['Release Status'];
-
-                const startDateValue = startDateInput.value;
-                const completionDateValue = completionDateInput.value;
-                const releaseDateValue = releaseDateInput.value;
-
-                const startDate = startDateValue ? new Date(`${startDateValue}T00:00:00`) : null;
-                const completionDate = completionDateValue ? new Date(`${completionDateValue}T00:00:00`) : null;
-                const releaseDate = releaseDateValue ? new Date(`${releaseDateValue}T00:00:00`) : null;
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-
-                // --- Reset validation styles ---
-                [startDateInput, completionDateInput, releaseDateInput].forEach(input => input.classList.remove('border-red-500', 'border-2'));
-
-                let errors = [];
-                // --- Validation Rules ---
-                if (handoverDate && startDate && startDate < handoverDate) errors.push('UAT Start Date must be on or after Handover Date.');
-                if (startDate && completionDate && completionDate < startDate) errors.push('UAT Completion Date must be on or after Start Date.');
-                if (completionDate && releaseDate && releaseDate < completionDate) errors.push('Release Date must be on or after UAT Completion Date.');
-                
-                if (errors.length > 0) {
-                    showError(errors.join(' '));
-                    if (startDate < handoverDate) startDateInput.classList.add('border-red-500', 'border-2');
-                    if (completionDate < startDate) completionDateInput.classList.add('border-red-500', 'border-2');
-                    if (releaseDate < completionDate) releaseDateInput.classList.add('border-red-500', 'border-2');
-                } else {
-                    const hasOtherErrors = document.querySelector('.border-red-500');
-                    if (!hasOtherErrors) errorMessage.classList.add('hidden');
-                }
-
-                // --- Dynamic Status & Color Logic ---
-                // UAT Status
-                const uatStatusCell = uatStatusSelect.parentElement;
-                if (startDate && startDate < today && uatStatusSelect.value === 'Not Started') {
-                    uatStatusSelect.value = 'Delayed';
-                } else if (startDate && startDate > today) {
-                     uatStatusSelect.value = 'Not Started';
-                }
-                
-                if(uatStatusSelect.value === 'Delayed') {
-                    uatStatusCell.classList.add('bg-red-300');
-                    uatStatusCell.classList.remove('bg-blue-300');
-                } else {
-                    uatStatusCell.classList.add('bg-blue-300');
-                    uatStatusCell.classList.remove('bg-red-300');
-                }
-                
-                // Release Status
-                const releaseStatusCell = releaseStatusSelect.parentElement;
-                 if (releaseDate && releaseDate < today && releaseStatusSelect.value === 'Not Started') {
-                    releaseStatusSelect.value = 'Delayed';
-                } else if (releaseDate && releaseDate > today) {
-                    releaseStatusSelect.value = 'Not Started';
-                }
-
-                if(releaseStatusSelect.value === 'Delayed') {
-                    releaseStatusCell.classList.add('bg-red-300');
-                    releaseStatusCell.classList.remove('bg-blue-300');
-                } else {
-                    releaseStatusCell.classList.add('bg-blue-300');
-                    releaseStatusCell.classList.remove('bg-red-300');
-                }
-            };
-
-            // Populate table rows
-            if (tickets.length > 0) {
-                tickets.forEach(ticket => {
-                    const row = document.createElement('tr');
-                    row.className = 'border-b border-gray-200 hover:bg-gray-100';
-
-                    tableColumns.forEach(column => {
-                        const cell = document.createElement('td');
-                        const isJiraColumn = column.type === 'jira';
-                        cell.className = `px-4 py-2 whitespace-nowrap ${isJiraColumn ? 'bg-gray-50' : 'bg-blue-300'}`;
-
-                        if (column.type === 'jira') {
-                            cell.textContent = ticket[column.source] || '';
-                        } else if (column.type === 'date') {
-                            const input = document.createElement('input');
-                            input.type = 'date';
-                            input.className = 'w-full px-2 py-1 border rounded';
-                            if (column.source) {
-                                // Format the date for the input field
-                                const dateValue = ticket[column.source];
-                                if (dateValue) {
-                                    input.value = dateValue;
-                                }
-                            }
-                            input.setAttribute('data-ticket-id', ticket['Item#']);
-                            input.setAttribute('data-field-name', column.name);
-
-                            // Load from localStorage
-                            const savedValue = localStorage.getItem(`JiraDashboard-${ticket['Item#']}-${column.name}`);
-                            if (savedValue) {
-                                input.value = savedValue;
-                            }
-
-                            cell.appendChild(input);
-                        } else if (column.type === 'select') {
-                            const select = document.createElement('select');
-                            select.className = 'w-full px-2 py-1 border rounded';
-                            column.options.forEach(optionText => {
-                                const option = document.createElement('option');
-                                option.value = optionText;
-                                option.textContent = optionText;
-                                select.appendChild(option);
-                            });
-                            select.setAttribute('data-ticket-id', ticket['Item#']);
-                            select.setAttribute('data-field-name', column.name);
-                            
-                            // Load from localStorage
-                            const savedValue = localStorage.getItem(`JiraDashboard-${ticket['Item#']}-${column.name}`);
-                            if (savedValue) {
-                                select.value = savedValue;
-                            }
-
-                            cell.appendChild(select);
-                        }
-                        row.appendChild(cell);
-                    });
-
-                    ticketsBody.appendChild(row);
-                    updateRowLogic(row); // Run logic for the new row
-                });
-
-                // Add a single event listener to the table body
-                ticketsBody.addEventListener('change', (e) => {
-                    if (e.target.matches('input, select')) {
-                        // Save to localStorage
-                        const ticketId = e.target.getAttribute('data-ticket-id');
-                        const fieldName = e.target.getAttribute('data-field-name');
-                        if (ticketId && fieldName) {
-                            localStorage.setItem(`JiraDashboard-${ticketId}-${fieldName}`, e.target.value);
-                        }
-                        updateRowLogic(e.target.closest('tr'));
-                    }
-                });
-
-            } else {
-                const row = document.createElement('tr');
-                const cell = document.createElement('td');
-                cell.colSpan = tableColumns.length;
-                cell.className = 'text-center text-gray-500 py-4';
-                cell.textContent = 'No tickets found for this project.';
-                row.appendChild(cell);
-                ticketsBody.appendChild(row);
+        // Enrich the columnDefinition with the actual Jira field ID.
+        tableColumns = columnDefinition.map(col => {
+            const jiraField = jiraFieldMap.get(col.jiraName.toLowerCase());
+            const fieldId = jiraField ? jiraField.id : col.jiraName;
+            return { ...col, id: fieldId };
+        });
+        
+        // Populate the name-to-ID map used when saving data.
+        tableColumns.forEach(col => {
+            if (col.isJira) {
+                jiraFieldIdMap[col.name] = col.id;
             }
+        });
 
-            loading.style.display = 'none';
-        } else {
-            const error = await response.json();
-            showError(`Error: ${error.message}`);
-        }
     } catch (error) {
-        console.error('An error occurred while fetching tickets:', error);
-        showError('An error occurred while fetching tickets. Please check the console for details.');
+        console.error('Failed to fetch and set up Jira columns:', error);
+        // Display an error to the user on the page
+        const container = document.getElementById('dashboard-container');
+        if (container) {
+            container.innerHTML = `<div class="text-red-500">Error: Could not load Jira field configuration. Please check the backend server and your Jira connection.</div>`;
+        }
     }
-}); 
+};
+
+/**
+ * Fetches all tickets from the backend.
+ * @returns {Promise<Array>} A promise that resolves to an array of ticket objects.
+ */
+async function fetchTickets() {
+    try {
+        const response = await fetch(`${API_URL}/api/tickets`, {credentials: 'include'});
+        if (!response.ok) {
+            if (response.status === 401) {
+                window.location.href = 'index.html'; // Redirect to login
+            }
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const tickets = await response.json();
+        return tickets;
+    } catch (error) {
+        console.error('Failed to fetch tickets:', error);
+        return [];
+    }
+}
+
+/**
+ * Renders the entire ticket table, including headers and rows.
+ * @param {Array} tickets - An array of ticket objects from Jira.
+ */
+function renderTable(tickets) {
+    const container = document.getElementById('dashboard-container');
+    if (!container) return;
+
+    // Clear previous content
+    container.innerHTML = '';
+
+    const table = document.createElement('table');
+    table.className = 'min-w-full divide-y divide-gray-200';
+
+    const visibleColumns = tableColumns.filter(c => c.isVisible);
+
+    // Create table header
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    visibleColumns.forEach(column => {
+        const th = document.createElement('th');
+        th.className = 'px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+        
+        // Apply color coding to headers based on column type
+        if (column.isEditable) {
+            th.classList.add('bg-yellow-100'); // Editable column header color
+        } else if (column.isJira) {
+            th.classList.add('bg-green-100'); // Jira-data column header color
+        }
+        th.textContent = column.name;
+        headerRow.appendChild(th);
+    });
+    const saveHeader = document.createElement('th');
+    saveHeader.className = 'px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50';
+    saveHeader.textContent = 'Actions';
+    headerRow.appendChild(saveHeader);
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    // Create table body
+    const tbody = document.createElement('tbody');
+    tbody.className = 'bg-white divide-y divide-gray-200';
+    if (tickets.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = visibleColumns.length + 1;
+        td.className = 'px-6 py-4 text-center text-gray-500';
+        td.textContent = 'No tickets found.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    } else {
+        tickets.forEach(ticket => {
+            const tr = document.createElement('tr');
+            tr.id = `ticket-${ticket.key}`;
+
+            const storedData = getStoredTicketData(ticket.key);
+
+            visibleColumns.forEach(column => {
+                const td = document.createElement('td');
+                td.className = 'px-6 py-4 whitespace-nowrap';
+
+                // Apply color coding to cells
+                if (column.isEditable) {
+                    td.classList.add('bg-yellow-50'); // Editable cell color
+                } else if (column.isJira) {
+                    td.classList.add('bg-green-50'); // Jira-data cell color
+                }
+
+                if (column.isEditable) {
+                    const savedValue = storedData[column.name] || (ticket.fields[column.id] ? (column.type === 'date' ? ticket.fields[column.id].split('T')[0] : ticket.fields[column.id]) : '');
+                    
+                    if (column.type === 'dropdown') {
+                        const select = document.createElement('select');
+                        select.id = `${ticket.key}-${column.id}`;
+                        select.className = 'w-full p-1 border rounded';
+                        
+                        column.dropdownOptions.forEach(optionText => {
+                            const option = document.createElement('option');
+                            option.value = optionText;
+                            option.textContent = optionText;
+                            if (savedValue === optionText) {
+                                option.selected = true;
+                            }
+                            select.appendChild(option);
+                        });
+                        td.appendChild(select);
+                    } else {
+                        const input = document.createElement('input');
+                        input.type = column.type || 'text';
+                        input.id = `${ticket.key}-${column.id}`;
+                        input.className = 'w-full p-1 border rounded';
+                        input.value = savedValue;
+                        td.appendChild(input);
+                    }
+                } else {
+                    let cellValue = '';
+                    if (column.id === 'key') {
+                        cellValue = ticket.key;
+                    } else if (ticket.fields[column.id]) {
+                        const field = ticket.fields[column.id];
+                        if (typeof field === 'object' && field !== null) {
+                            cellValue = field.name || field.value || JSON.stringify(field);
+                        } else {
+                            // Format date fields correctly
+                            if (column.jiraName === 'duedate') {
+                                cellValue = new Date(field).toLocaleDateString('en-CA'); // YYYY-MM-DD
+                            } else {
+                                cellValue = field;
+                            }
+                        }
+                    }
+                    td.textContent = cellValue;
+                }
+                tr.appendChild(td);
+            });
+
+            // Add save button cell
+            const saveCell = document.createElement('td');
+            saveCell.className = 'px-6 py-4';
+            const saveButton = document.createElement('button');
+            saveButton.textContent = 'Save';
+            saveButton.className = 'bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded';
+            saveButton.onclick = () => saveChanges(ticket.key);
+            saveCell.appendChild(saveButton);
+            tr.appendChild(saveCell);
+
+            tbody.appendChild(tr);
+        });
+    }
+    table.appendChild(tbody);
+    container.appendChild(table);
+}
+
+/**
+ * Saves the changes for a single ticket row to the backend.
+ * @param {string} issueKey - The key of the issue to save.
+ */
+async function saveChanges(issueKey) {
+    const payload = {};
+    const updatedLocalData = {};
+
+    tableColumns.forEach(column => {
+        if (column.isEditable) {
+            const input = document.getElementById(`${issueKey}-${column.id}`);
+            if (input) {
+                payload[column.id] = input.value;
+                updatedLocalData[column.name] = input.value;
+            }
+        }
+    });
+
+    saveStoredTicketData(issueKey, updatedLocalData);
+
+    try {
+        const response = await fetch(`${API_URL}/api/tickets/${issueKey}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ fields: payload })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to save changes: ${response.statusText}`);
+        }
+
+        alert('Changes saved successfully!');
+        // Optionally, re-render the row or show a success state
+    } catch (error) {
+        console.error('Error saving changes:', error);
+        alert(`Error saving changes: ${error.message}`);
+    }
+}
+
+/**
+ * Main function to initialize the dashboard.
+ * It sets up the columns, fetches the tickets, and renders the table.
+ */
+async function main() {
+    // First, configure the columns based on Jira fields. This is critical.
+    await fetchAndSetColumns();
+    
+    // Only after the columns are set up, fetch the tickets.
+    const tickets = await fetchTickets();
+    
+    // Finally, render the table with the tickets.
+    renderTable(tickets);
+}
+
+// Initial load
+document.addEventListener('DOMContentLoaded', main);

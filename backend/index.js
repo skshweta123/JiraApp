@@ -1,111 +1,202 @@
 const express = require('express');
+const axios = require('axios');
 const cors = require('cors');
 const session = require('express-session');
 const FileStore = require('session-file-store')(session);
-const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5001;
+const port = 5001;
 
-// Middlewares
+// Define the exact list of Jira fields required for the dashboard.
+// This prevents fetching all fields and makes the app's behavior predictable.
+const REQUIRED_JIRA_FIELDS = [
+    // Standard fields that are always available
+    'summary',
+    'status',
+    'issuetype',
+    'project',
+    'created',
+    'duedate',
+    'labels',
+    'reporter',
+    'assignee',
+
+    // Custom fields - these names must match the configuration in your Jira instance.
+    'UAT Handover Date',
+    'UAT Planned Start Date',
+    'UAT Planned Completion',
+    'UAT Status',
+    'Planned Release Date',
+    'Release Status',
+];
+
+
+// CORS configuration to allow credentials from the frontend origin
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000'], // Allow both old and new frontend ports
-    credentials: true,
+    origin: ['http://localhost:3000', 'http://127.0.0.1:3000', 'null', 'file://'],
+    credentials: true
 }));
+
 app.use(express.json());
-// Session configuration
-const fileStoreOptions = {};
+
+// Session management setup
 app.use(session({
-    store: new FileStore(fileStoreOptions),
-    secret: 'your-secret-key', // It's good practice to use an environment variable for this
+    store: new FileStore({ path: './sessions', ttl: 86400, retries: 0 }),
+    secret: process.env.SESSION_SECRET || 'a-very-secret-key',
     resave: false,
-    saveUninitialized: false,
+    saveUninitialized: false, // Changed to false for better security
     cookie: {
         secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
         httpOnly: true,
-        maxAge: 1000 * 60 * 60 * 24 * 30 // 30 days
+        maxAge: 1000 * 60 * 60 * 24 // 1 day
     }
 }));
 
-// Routes
-app.get('/', (req, res) => {
-    res.send('Jira Integration Backend is running!');
-});
-
+// Login endpoint to authenticate with Jira
 app.post('/api/auth/login', async (req, res) => {
-    // Correctly extract jiraSite from the request body
-    let { jiraSite, email, apiToken } = req.body;
+    const { jiraSite, email, apiToken, jiraProjectKey } = req.body;
 
-    if (!jiraSite || !email || !apiToken) {
-        return res.status(400).json({ message: 'Jira Site, email, and API token are required.' });
+    if (!jiraSite || !email || !apiToken || !jiraProjectKey) {
+        return res.status(400).json({ message: 'Jira Site, Email, API Token, and Project Key are required.' });
     }
 
-    // Ensure the URL has a protocol
-    if (!jiraSite.startsWith('http://') && !jiraSite.startsWith('https://')) {
-        jiraSite = `https://${jiraSite}`;
-    }
-
-    const authHeader = `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`;
+    // Ensure the URL starts with https://
+    const url = jiraSite.startsWith('http') ? jiraSite : `https://${jiraSite}`;
+    const auth = `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`;
 
     try {
-        const response = await axios.get(`${jiraSite}/rest/api/3/myself`, { headers: { 'Authorization': authHeader } });
+        // Verify credentials by fetching user info
+        const response = await axios.get(`${url}/rest/api/3/myself`, {
+            headers: { 'Authorization': auth }
+        });
 
         if (response.status === 200) {
-            req.session.jiraCreds = {
-                url: jiraSite, // Use the corrected variable
-                auth: authHeader
-            };
-            res.status(200).json({ message: 'Login successful.' });
+            // Store all necessary credentials and the project key in the session
+            req.session.jiraCreds = { url, auth, jiraProjectKey };
+            res.json({ message: 'Login successful' });
         } else {
-            res.status(response.status).json({ message: 'Jira authentication failed.' });
+            res.status(response.status).json({ message: 'Login failed' });
         }
     } catch (error) {
-        res.status(401).json({ message: 'Login failed. Please check your credentials and site URL.' });
+        const status = error.response ? error.response.status : 500;
+        const message = error.response ? error.response.statusText : error.message;
+        res.status(status).json({ message: `Login failed: ${message}` });
     }
 });
 
+// Fetches and maps all available Jira fields
+app.get('/api/jira-fields', async (req, res) => {
+    if (!req.session.jiraCreds) {
+        return res.status(401).json({ message: 'Unauthorized.' });
+    }
+    const { url, auth } = req.session.jiraCreds;
+
+    try {
+        const response = await axios.get(`${url}/rest/api/2/field`, {
+            headers: { 'Authorization': auth }
+        });
+
+        // Instead of returning all fields, filter to only include the ones we need.
+        const allJiraFields = response.data;
+        const requiredFieldNames = REQUIRED_JIRA_FIELDS.map(name => name.toLowerCase());
+        
+        const requiredFields = allJiraFields.filter(field => 
+            requiredFieldNames.includes(field.name.toLowerCase()) || requiredFieldNames.includes(field.id)
+        );
+
+        res.json(requiredFields);
+    } catch (error) {
+        console.error('Failed to fetch Jira fields:', error.message);
+        res.status(500).json({ message: 'Failed to fetch Jira fields' });
+    }
+});
+
+// Fetches all tickets for a given project
 app.get('/api/tickets', async (req, res) => {
+    console.log('--- Received request for /api/tickets ---');
+
+    if (!req.session.jiraCreds) {
+        console.log('Session check failed: No jiraCreds found.');
+        return res.status(401).json({ message: 'Unauthorized. Please log in first.' });
+    }
+
+    const { url, auth, jiraProjectKey } = req.session.jiraCreds;
+    
+    console.log(`Session details: projectKey=${jiraProjectKey}`);
+
+    if (!jiraProjectKey) {
+        console.log('Error: jiraProjectKey is missing from session.');
+        return res.status(400).json({ message: 'Jira Project Key is missing from session. Please log in again.' });
+    }
+
+    const jql = `project = "${jiraProjectKey}" AND issuetype = Story ORDER BY created DESC`;
+    const fieldsToFetch = REQUIRED_JIRA_FIELDS.join(',');
+
+    console.log(`Constructed JQL: ${jql}`);
+    console.log(`Fields to fetch: ${fieldsToFetch}`);
+
+    try {
+        const searchResponse = await axios.get(`${url}/rest/api/3/search`, {
+            headers: { 'Authorization': auth },
+            params: { jql, fields: fieldsToFetch }
+        });
+
+        console.log('Jira API response status:', searchResponse.status);
+        console.log(`Jira API returned ${searchResponse.data.issues.length} issues.`);
+
+        // The frontend expects an array of tickets, not an object.
+        res.json(searchResponse.data.issues);
+
+    } catch (error) {
+        console.error('--- Error in /api/tickets ---');
+        if (error.response) {
+            console.error('Jira API Error Status:', error.response.status);
+            console.error('Jira API Error Body:', JSON.stringify(error.response.data, null, 2));
+        } else {
+            console.error('Axios Error:', error.message);
+        }
+        res.status(500).json({ message: 'An internal server error occurred while fetching tickets.' });
+    }
+});
+
+// Updates a specific ticket
+app.put('/api/tickets/:issueKey', async (req, res) => {
     if (!req.session.jiraCreds) {
         return res.status(401).json({ message: 'Unauthorized. Please log in first.' });
     }
 
     const { url, auth } = req.session.jiraCreds;
-    const jiraProjectKey = process.env.JIRA_PROJECT_KEY || 'KAN';
+    const { issueKey } = req.params;
+    const { fields } = req.body;
 
+    if (!fields) {
+        return res.status(400).json({ message: 'Update data is missing.' });
+    }
+    
     try {
-        const response = await axios.get(`${url}/rest/api/3/search`, {
-            headers: { 'Authorization': auth },
-            params: {
-                jql: `project = "${jiraProjectKey}" AND issuetype = Story ORDER BY created DESC`,
-                // Fetch only the necessary fields from Jira.
-                fields: 'summary,status,duedate'
+        // The payload for Jira API should be in the format { "fields": { ... } }
+        const updatePayload = { fields };
+        
+        await axios.put(`${url}/rest/api/3/issue/${issueKey}`, updatePayload, {
+            headers: { 
+                'Authorization': auth,
+                'Content-Type': 'application/json'
             }
         });
+        
+        res.json({ message: 'Ticket updated successfully.' });
 
-        if (response.status === 200) {
-            const issues = response.data.issues;
-            const columns = ['Item#', 'Title', 'Status', 'Due Date'];
-            const tickets = issues.map(issue => {
-                const fields = issue.fields || {};
-                return {
-                    'Item#': issue.key,
-                    'Title': fields.summary || 'No Summary',
-                    'Status': fields.status ? fields.status.name : 'No Status',
-                    // Send date in YYYY-MM-DD format or null
-                    'Due Date': fields.duedate ? fields.duedate : null
-                };
-            });
-            res.json({ columns, tickets });
-        } else {
-            res.status(response.status).json({ message: 'Failed to fetch tickets from Jira' });
-        }
     } catch (error) {
-        console.error('Error fetching Jira tickets:', error.response ? error.response.data : error.message);
-        res.status(500).json({ message: 'An error occurred while fetching tickets.' });
+        const errDetails = error.response ? error.response.data : { message: error.message };
+        console.error('Error updating Jira ticket:', errDetails);
+        res.status(500).json({ 
+            message: 'Failed to update ticket in Jira.',
+            details: errDetails.errors || {} 
+        });
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+app.listen(port, () => {
+    console.log(`Server is running on http://localhost:${port}`);
 }); 
