@@ -160,42 +160,77 @@ app.get('/api/tickets', async (req, res) => {
     }
 });
 
-// Updates a specific ticket
-app.put('/api/tickets/:issueKey', async (req, res) => {
+// Updates a specific ticket. Changed to PATCH for partial updates.
+app.patch('/api/tickets/:issueKey', async (req, res) => {
     if (!req.session.jiraCreds) {
         return res.status(401).json({ message: 'Unauthorized. Please log in first.' });
     }
 
     const { url, auth } = req.session.jiraCreds;
     const { issueKey } = req.params;
-    const { fields } = req.body;
+    const { updates } = req.body; // Expecting an 'updates' object from the frontend.
 
-    if (!fields) {
+    if (!updates) {
         return res.status(400).json({ message: 'Update data is missing.' });
     }
     
     try {
-        // The payload for Jira API should be in the format { "fields": { ... } }
-        const updatePayload = { fields };
-        
-        await axios.put(`${url}/rest/api/3/issue/${issueKey}`, updatePayload, {
-            headers: { 
-                'Authorization': auth,
-                'Content-Type': 'application/json'
+        const fieldsToUpdate = {};
+        let statusTransitionId = null;
+
+        // Separate regular field updates from status transitions
+        for (const fieldName in updates) {
+            const value = updates[fieldName];
+            if (fieldName.toLowerCase() === 'status') {
+                // Find the transition ID for the new status
+                const transitionsResponse = await axios.get(`${url}/rest/api/3/issue/${issueKey}/transitions`, {
+                    headers: { 'Authorization': auth }
+                });
+                const transition = transitionsResponse.data.transitions.find(t => t.name.toLowerCase() === value.toLowerCase());
+                
+                if (transition) {
+                    statusTransitionId = transition.id;
+                } else {
+                    return res.status(400).json({ message: `Invalid status transition: "${value}"`});
+                }
+            } else {
+                fieldsToUpdate[fieldName] = value;
             }
-        });
+        }
+        
+        // If there are regular fields to update, send a PUT request to the issue.
+        // Jira's API for setting fields is a PUT, not a PATCH on the /issue endpoint.
+        if (Object.keys(fieldsToUpdate).length > 0) {
+            await axios.put(`${url}/rest/api/3/issue/${issueKey}`, { fields: fieldsToUpdate }, {
+                headers: { 
+                    'Authorization': auth,
+                    'Content-Type': 'application/json'
+                }
+            });
+        }
+
+        // If there is a status transition to perform, do it now.
+        if (statusTransitionId) {
+            await axios.post(`${url}/rest/api/3/issue/${issueKey}/transitions`, { transition: { id: statusTransitionId } }, {
+                headers: { 
+                    'Authorization': auth,
+                    'Content-Type': 'application/json'
+                }
+            });
+        }
         
         res.json({ message: 'Ticket updated successfully.' });
 
     } catch (error) {
         const errDetails = error.response ? error.response.data : { message: error.message };
-        console.error('Error updating Jira ticket:', errDetails);
+        console.error('Error updating Jira ticket:', JSON.stringify(errDetails, null, 2));
         res.status(500).json({ 
             message: 'Failed to update ticket in Jira.',
-            details: errDetails.errors || {} 
+            details: errDetails.errors || errDetails.errorMessages || {}
         });
     }
 });
+
 
 app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
