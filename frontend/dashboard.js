@@ -1,3 +1,15 @@
+// =================================================================================================
+//
+//   VERSION: 1.2 (STABLE)
+//   DATE: 2024-07-16
+//
+//   DESCRIPTION: This file represents a stable, working version of the application.
+//                Extreme caution should be exercised when making modifications.
+//                It is highly recommended to create a new branch from the 'v1.2-stable'
+//                git tag before implementing new features or fixes.
+//
+// =================================================================================================
+
 const API_URL = 'http://localhost:5001';
 
 // This configuration defines the structure and behavior of the dashboard table.
@@ -43,6 +55,8 @@ const columnDefinition = [
 let tableColumns = [];
 // This map stores the mapping of user-facing column names to Jira's internal field IDs.
 let jiraFieldIdMap = {};
+// This object will track the editing state of each ticket row.
+let editStates = {};
 
 
 /**
@@ -192,7 +206,7 @@ function renderTable(tickets) {
             
             const editButton = document.createElement('button');
             editButton.innerHTML = '✏️'; // Edit icon
-            editButton.className = 'edit-btn bg-gray-200 hover:bg-gray-300 text-black font-bold py-2 px-4 rounded';
+            editButton.className = 'edit-btn'; // Removed background and other styles for a cleaner look
             editButton.onclick = () => toggleEditMode(ticket.key, true);
             
             const saveButton = document.createElement('button');
@@ -215,16 +229,46 @@ function renderTable(tickets) {
 
                 if (column.isEditable) {
                     // This is a field the user can edit directly.
-                    const savedValue = storedData[column.name] || (ticket.fields[column.id] ? (column.type === 'date' ? ticket.fields[column.id].split('T')[0] : ticket.fields[column.id]) : '');
-                    
-                    const isStandardJiraField = column.isStandardJiraField;
+                    let rawValue = ticket.fields[column.id];
+                    let initialValue;
+
+                    // This block robustly extracts a displayable value from various Jira field formats.
+                    if (rawValue === null || rawValue === undefined) {
+                        initialValue = ''; // Default to empty for null/undefined
+                    } else if (column.name === 'Status') {
+                        // Status can be an object {name: '...'} or a string.
+                        if (typeof rawValue === 'object') {
+                            initialValue = rawValue.name || `[Status ID: ${rawValue.id}]` || '[Malformed Status]';
+                        } else {
+                            initialValue = rawValue;
+                        }
+                    } else if (column.type === 'date' && typeof rawValue === 'string') {
+                        // Handles date strings
+                        initialValue = rawValue.split('T')[0];
+                    } else if (typeof rawValue === 'object') {
+                        // Generic handler for other objects
+                        initialValue = rawValue.value || rawValue.name || '';
+                    } else {
+                        initialValue = rawValue;
+                    }
+
+                    // Use the `storedData` variable that was already defined at the top of the loop.
+                    let savedValue = storedData[column.name];
+
+                    // If the saved value is corrupted or missing, fall back to the value from Jira.
+                    if (savedValue === '[object Object]' || savedValue === undefined || savedValue === null) {
+                        savedValue = initialValue;
+                    }
+                    savedValue = savedValue || ''; // Ensure it's not null/undefined for the input.
+
+                    const isReadonly = !editStates[ticket.key]?.isEditing;
 
                     if (column.type === 'dropdown') {
                         const select = document.createElement('select');
                         select.id = `${ticket.key}-${column.id}`;
                         // Standard Jira fields start as text-like, others are regular inputs.
-                        select.className = isStandardJiraField ? 'w-full p-1 bg-transparent border-none' : 'w-full p-1 bg-white border border-gray-300 rounded';
-                        select.disabled = isStandardJiraField; // Only disable standard Jira fields by default
+                        select.className = column.isStandardJiraField ? 'w-full p-1 bg-transparent border-none' : 'w-full p-1 bg-white border border-gray-300 rounded';
+                        select.disabled = column.isStandardJiraField; // Only disable standard Jira fields by default
                         
                         column.dropdownOptions.forEach(optionText => {
                             const option = document.createElement('option');
@@ -241,9 +285,9 @@ function renderTable(tickets) {
                         input.type = column.type || 'text';
                         input.id = `${ticket.key}-${column.id}`;
                         // Standard Jira fields start as text-like, others are regular inputs.
-                        input.className = isStandardJiraField ? 'w-full p-1 bg-transparent border-none' : 'w-full p-1 bg-white border border-gray-300 rounded';
+                        input.className = column.isStandardJiraField ? 'w-full p-1 bg-transparent border-none' : 'w-full p-1 bg-white border border-gray-300 rounded';
                         input.value = savedValue;
-                        input.readOnly = isStandardJiraField; // Only make standard Jira fields read-only by default
+                        input.readOnly = column.isStandardJiraField; // Only make standard Jira fields read-only by default
                         td.appendChild(input);
                     }
                 } else {

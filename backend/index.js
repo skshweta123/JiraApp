@@ -1,3 +1,15 @@
+// =================================================================================================
+//
+//   VERSION: 1.2 (STABLE)
+//   DATE: 2024-07-16
+//
+//   DESCRIPTION: This file represents a stable, working version of the application.
+//                Extreme caution should be exercised when making modifications.
+//                It is highly recommended to create a new branch from the 'v1.2-stable'
+//                git tag before implementing new features or fixes.
+//
+// =================================================================================================
+
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -149,7 +161,7 @@ app.get('/api/tickets', async (req, res) => {
         res.json(searchResponse.data.issues);
 
     } catch (error) {
-        console.error('--- Error in /api/tickets ---');
+        console.error('Error fetching Jira tickets:');
         if (error.response) {
             console.error('Jira API Error Status:', error.response.status);
             console.error('Jira API Error Body:', JSON.stringify(error.response.data, null, 2));
