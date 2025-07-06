@@ -323,15 +323,13 @@ function renderTable(tickets) {
 
     // Add instructional text if there are editable columns
     if (tableColumns.some(c => c.isEditable)) {
-        const p = document.createElement('p');
-        p.className = 'text-sm text-gray-600 mt-4';
-        p.innerHTML = `
-            <span class="font-bold">Instructions:</span> 
-            Click the <span class="inline-block bg-gray-200 px-2 py-1 rounded">✏️</span> icon to edit a row's fields.
-            Rows with a <span class="bg-green-100">green header</span> are from Jira. 
-            Those with a <span class="bg-yellow-100">yellow header</span> are user-editable fields.
+        const instructions = document.createElement('p');
+        instructions.className = 'text-sm text-gray-600 mb-4';
+        instructions.innerHTML = `
+            Click the <span class="inline-block bg-gray-200 px-2 py-1 rounded">✏️</span> icon to edit a row's Jira fields.
+            Custom fields (yellow background) are always editable.
         `;
-        container.appendChild(p);
+        container.insertBefore(instructions, table);
     }
 }
 
